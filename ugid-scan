@@ -1,0 +1,61 @@
+#!/usr/bin/perl
+# Scan mounted elmer volumes via NFS for files and directories
+# with UID/GID values that we might want to migrate.
+# Outputs a database of directories that contain such files,
+# including which and how many out-of-range uid/gid are present
+# in that directory
+#
+# Markus Kuhn
+
+use strict;
+use File::Find ();
+
+my %uid;
+my %gid;
+
+sub wanted {
+    return if /^\.nfs[0-9a-f]{24}$/;  # skip stale NFS file handles
+    my ($dev,$ino,$mode,$nlink,$uid,$gid) = lstat($_);
+    
+    if (-d _ && $_ eq '.snapshot') {
+        $File::Find::prune = 1;   # don't recurse into NetApp backups
+        return;
+    }
+    next if $uid == 0 && ($gid == 0 || $gid == 1 || $gid == 10000);
+    if ($uid < 1100 || $uid > 9999 || ($uid >= 3601 && $uid <= 3610)) {
+	next if $uid < 2;
+	print "u$uid:$File::Find::dir\n" unless $uid{$uid}{$File::Find::dir};
+	$uid{$uid}{$File::Find::dir}++;
+    }
+    if ($gid < 1100 || $gid > 9999 || ($gid >= 3601 && $gid <= 3610)) {
+	next if $gid < 2 || $gid == 19 || $gid == 20;
+	print "g$gid:$File::Find::dir\n" unless $gid{$gid}{$File::Find::dir};
+	$gid{$gid}{$File::Find::dir}++;
+    }
+}
+
+# remove duplicates from array
+sub uniq {
+    my %seen;
+    grep !$seen{$_}++, @_;
+}
+
+# Traverse desired filesystems
+for my $vol (1..9) {
+    File::Find::find({ wanted => \&wanted }, "/Nfs/Mounts/elmer-vol$vol");
+}
+
+# dump database
+# Record format: /^[ug]\s*(\d+):\s*(\d+):([^\0]*)\0\n\z/
+# fields: uid/gid:#files:directory
+my $fn = 'uid-gid-list';
+open(my $db, '>', $fn) || die("Can't write '$fn': $!\n");
+for my $id (sort {$a<=>$b} uniq (keys %uid, keys %gid)) {
+    for my $dir (sort keys %{$uid{$id}}) {
+	printf $db "u%5d:%4d:%s\0\n", $id, $uid{$id}{$dir}, $dir;
+    }
+    for my $dir (sort keys %{$gid{$id}}) {
+	printf $db "g%5d:%4d:%s\0\n", $id, $gid{$id}{$dir}, $dir;
+    }
+}
+close($db);
