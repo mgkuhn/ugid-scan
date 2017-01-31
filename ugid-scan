@@ -9,27 +9,70 @@
 
 use strict;
 use File::Find ();
+use POSIX qw(strftime);
 
-my %uid;
-my %gid;
+# hash (key=uid or gid) of hash (key=directory path) indexing all
+# files found with interesting uid or gid
+our %uid;
+our %gid;
 
+my $verbose = 0;
+
+# as this is a long-running process, output progress reports
+our $report = 0;
+our $report_frequency = 1;   # log entry every that many seconds
+$SIG{ALRM} = sub { $report = 1; };
+our $logfile;
+my $logfilename = 'ugid-log';
+open($logfile, '>', $logfilename)
+    || die("Cannot write log file '$logfilename': $!\n");
+$logfile->autoflush(1);
+our $starttime = time;
+alarm $report_frequency;
+
+# this subroutine visits every file found
 sub wanted {
-    return if /^\.nfs[0-9a-f]{24}$/;  # skip stale NFS file handles
-    my ($dev,$ino,$mode,$nlink,$uid,$gid) = lstat($_);
-    
+    # skip stale NFS file handles
+    return if /^\.nfs[0-9a-f]{24}$/;
+
+    # output progress report requested by SIGALRM
+    if ($report) {
+	$report = 0;
+	my $elapsed = time - $starttime;
+	print($logfile
+	      sprintf('%3d:%02d:%02d',
+		      $elapsed / 3600, ($elapsed % 3600) / 60, $elapsed % 60),
+	      ' ',
+	      strftime('%Y-%m-%d %H:%M' .
+	               ($report_frequency < 60 ? ':%S' : ''), localtime),
+	      ' ', $File::Find::name, "\n");
+	alarm $report_frequency;
+    }
+
+    my (undef,undef,undef,undef,$uid,$gid) = lstat($_);
+
+    # don't recurse into NetApp backups
     if (-d _ && $_ eq '.snapshot') {
-        $File::Find::prune = 1;   # don't recurse into NetApp backups
+        $File::Find::prune = 1;
         return;
     }
+    # skip files owned by root with group root/daemon/sysadmin (far too many)
     next if $uid == 0 && ($gid == 0 || $gid == 1 || $gid == 10000);
+    # record files with undesired uid
     if ($uid < 1100 || $uid > 9999 || ($uid >= 3601 && $uid <= 3610)) {
+	# skip files owned by root or daemon (too many)
 	next if $uid < 2;
-	print "u$uid:$File::Find::dir\n" unless $uid{$uid}{$File::Find::dir};
+	print "u$uid:$File::Find::dir\n"
+	    if $verbose && !$uid{$uid}{$File::Find::dir};
 	$uid{$uid}{$File::Find::dir}++;
     }
+    # record files with undesired gid
     if ($gid < 1100 || $gid > 9999 || ($gid >= 3601 && $gid <= 3610)) {
+	# skip files with one of these groups (too many files):
+	# root (0), daemon (1), old CIFS forcegroup (19), user (20)
 	next if $gid < 2 || $gid == 19 || $gid == 20;
-	print "g$gid:$File::Find::dir\n" unless $gid{$gid}{$File::Find::dir};
+	print "g$gid:$File::Find::dir\n"
+	    if $verbose && !$gid{$gid}{$File::Find::dir};
 	$gid{$gid}{$File::Find::dir}++;
     }
 }
@@ -44,12 +87,14 @@ sub uniq {
 for my $vol (1..9) {
     File::Find::find({ wanted => \&wanted }, "/Nfs/Mounts/elmer-vol$vol");
 }
+close $logfile;
 
 # dump database
 # Record format: /^[ug]\s*(\d+):\s*(\d+):([^\0]*)\0\n\z/
 # fields: uid/gid:#files:directory
-my $fn = 'uid-gid-list';
-open(my $db, '>', $fn) || die("Can't write '$fn': $!\n");
+my $fn = 'ugid-list';
+my $fntmp = "$fn~";
+open(my $db, '>', $fntmp) || die("Can't write '$fntmp': $!\n");
 for my $id (sort {$a<=>$b} uniq (keys %uid, keys %gid)) {
     for my $dir (sort keys %{$uid{$id}}) {
 	printf $db "u%5d:%4d:%s\0\n", $id, $uid{$id}{$dir}, $dir;
@@ -59,3 +104,4 @@ for my $id (sort {$a<=>$b} uniq (keys %uid, keys %gid)) {
     }
 }
 close($db);
+rename $fntmp, $fn;
