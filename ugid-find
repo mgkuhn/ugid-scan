@@ -1,0 +1,107 @@
+#!/usr/bin/perl -w
+# Search for files and directories on mounted elmer
+# volumes that have certain out-dated uid or gid fields,
+# based on the ugid-list index file prepared by ugid-scan.
+#
+# Markus Kuhn
+
+use strict;
+use UGidScan;
+use Storable;
+
+my %errors;
+
+# Search all files contained in one of the listed directories
+# for any that match the given uid and gid range (undef = don't care).
+sub search {
+    my ($uid, $gid, $dirs) = @_;
+    my @files;
+    my $ufilter = Filter->new($uid);
+    my $gfilter = Filter->new($gid);
+
+    for my $dir (@{$dirs}) {
+	opendir(my $dh, $dir) || die("Can't read directory '$dir': $!\n");
+	chdir($dir) || die("Can't change to directory '$dir': $!\n");
+	while(readdir $dh) {
+	    next if $_ eq '.' || $_ eq '..';
+	    my (undef,undef,undef,undef,$fuid,$fgid) = lstat($_);
+	    unless (defined $fuid) {
+		$errors{$dir}++;
+		next;
+	    }
+	    next unless $ufilter->matches($fuid);
+	    next unless $gfilter->matches($fgid);
+	    push @files, "$dir/$_";
+	}
+	closedir $dh;
+    }
+    return [sort {$a cmp $b} @files];
+}
+
+my $db;
+if (-r 'ugid-list.sdb') {
+    $db = retrieve 'ugid-list.sdb';
+} else {
+    $db = UGidScan::read_text_list('ugid-list');
+    #store $db, 'ugid-list.sdb';
+}
+
+my @stack = ();
+
+while (@ARGV) {
+    my $opt = shift @ARGV;
+    if ($opt =~ /^uiddir=([-\^\d,]+)$/) {
+	# push onto the stack a list of all directories containing
+	# files with the given uid.
+	push @stack, $db->uid_range_dirs($1);
+    } elsif ($opt =~ /^uid=([-\^\d,]+)(?::([-\^\d,]+))?$/) {
+	# push onto the stack a list of all files with the given uid
+	# and optionally filter for gid ranges
+	my $dirs = $db->uid_range_dirs($1);
+	push @stack, search($1, $2, $dirs);
+    } elsif ($opt =~ /^giddir=([-\^\d,]+)$/) {
+	# push onto the stack a list of all directories containing
+	# files with the given gid.
+	push @stack, $db->gid_range_dirs($1);
+    } elsif ($opt =~ /^gid=(?:([-\^\d,]+):)?([-\^\d,]+)$/) {
+	# push onto the stack a list of all files with the given gid
+	# and optionally filter for uid ranges
+	my $dirs = $db->gid_range_dirs($2);
+	push @stack, search($1, $2, $dirs);
+    } elsif ($opt eq 'print') {
+	# print all paths on the stack as a LF-terminated string
+	for my $s (@stack) {
+	    for my $r (@{$s}) {
+		print $r, "\n";
+	    }
+	}
+    } elsif ($opt eq 'print0') {
+	# print all paths on the stack as a \0-terminated string
+	for my $s (@stack) {
+	    for my $r (@{$s}) {
+		print $r, "\0";
+	    }
+	}
+    } elsif ($opt eq 'll') {
+	# show all paths on the stack with "ls -lnd"
+	open(my $p, '|xargs -r0 ls -lnd');
+	for my $s (@stack) {
+	    for my $r (@{$s}) {
+		print $p $r, "\0";
+	    }
+	}
+	close $p;
+    } elsif ($opt eq 'count') {
+	# output path numbers on the stack
+	for my $s (@stack) {
+	    print scalar(@{$s}), "\n";
+	}
+    } else {
+	die("Unknown option '$opt'\n");
+    }
+}
+
+# report errors encountered
+for my $dir (sort keys %errors) {
+    print STDERR "Warning: could not stat $errors{$dir} files in $dir\n";
+}

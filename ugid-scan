@@ -20,7 +20,7 @@ my $verbose = 0;
 
 # as this is a long-running process, output progress reports
 our $report = 0;
-our $report_frequency = 1;   # log entry every that many seconds
+our $report_frequency = 600;   # log entry every that many seconds
 $SIG{ALRM} = sub { $report = 1; };
 our $logfile;
 my $logfilename = 'ugid-log';
