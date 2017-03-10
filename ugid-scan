@@ -5,30 +5,97 @@
 # including which and how many out-of-range uid/gid are present
 # in that directory
 #
+# Fast testrun:
+# $ ./ugid-scan -f ugid-list-test.sdb -l ugid-log-test -r 10 /Nfs/Mounts/elmer-vol4/www-1/www /Nfs/Mounts/elmer-vol1/homes-8/acr31
+#
 # Markus Kuhn
 
 use strict;
 use File::Find ();
 use POSIX qw(strftime);
+use UGidScan;
+use Storable;
 
 # hash (key=uid or gid) of hash (key=directory path) indexing all
 # files found with interesting uid or gid
 our %uid;
 our %gid;
 
-my $verbose = 0;
+# command-line parameters
+our $uid_range = '1100-3600,0-1,3611-9999';
+our $gid_range = '1100-3600,0-1,3611-10000,19-20';
+our $verbose = 0;
+our $report_frequency = 600;   # log entry every that many seconds
+our $logfilename = 'ugid-log';
+our $dbfn = 'ugid-list.sdb';
+
+our $usage = <<"EOT";
+Build a database index of files on elmer with undesirable uid or gid.
+
+Usage: ugid-scan [options] [path ...]
+
+Options:
+
+  -f <filename>    Set filename of database/index output file
+
+  -l <filename>    Set logfile name
+
+  -r <int>         Add a logfile entry every <int> seconds.
+
+  -u <range>       UID range to be ignored
+
+  -g <range>       GID range to be ignored
+
+  -v               Increase verbosity level
+
+  -h               Print this help message
+
+Not providing any command-line arguments is equivalent to these defaults:
+
+\$ uid-scan -f $dbfn -l $logfilename -r $report_frequency \\
+           -u $uid_range -g $gid_range \\
+           /Nfs/Mounts/elmer-vol{1,2,3,4,5,6,7,8,9}
+
+Run only on NFS clients with mount options "nfsvers=3,nodiratime"
+(e.g., set in /etc/default/autofs).
+EOT
+
+while ($ARGV[0] =~ /^-/) {
+    $_ = shift @ARGV;
+    if ($_ eq '-f') {
+	$dbfn = shift @ARGV;
+    } elsif ($_ eq '-l') {
+	$logfilename = shift @ARGV;
+    } elsif ($_ eq '-r') {
+	$report_frequency = shift @ARGV;
+    } elsif ($_ eq '-u') {
+	$uid_range = shift @ARGV;
+    } elsif ($_ eq '-g') {
+	$gid_range = shift @ARGV;
+    } elsif ($_ eq '-v') {
+	$verbose++;
+    } elsif ($_ eq '-h' || $_ eq '--help') {
+	print $usage;
+	exit 0;
+    } else {
+	die("Unknown option '$_'\n\n$usage");
+    }
+}
+
+our $uid_filter = Filter->new($uid_range);
+our $gid_filter = Filter->new($gid_range);
 
 # as this is a long-running process, output progress reports
 our $report = 0;
-our $report_frequency = 600;   # log entry every that many seconds
-$SIG{ALRM} = sub { $report = 1; };
 our $logfile;
-my $logfilename = 'ugid-log';
-open($logfile, '>', $logfilename)
-    || die("Cannot write log file '$logfilename': $!\n");
-$logfile->autoflush(1);
 our $starttime = time;
-alarm $report_frequency;
+if ($logfilename) {
+    $SIG{ALRM} = sub { $report = 1; };
+    open($logfile, '>', $logfilename)
+	|| die("Cannot write log file '$logfilename': $!\n");
+    $logfile->autoflush(1);
+    alarm $report_frequency;
+}
 
 # this subroutine visits every file found
 sub wanted {
@@ -49,28 +116,24 @@ sub wanted {
 	alarm $report_frequency;
     }
 
-    my (undef,undef,undef,undef,$uid,$gid) = lstat($_);
+    my (undef,undef,undef,undef,$uid,$gid) = lstat;
+
+    return unless defined $gid;
 
     # don't recurse into NetApp backups
     if (-d _ && $_ eq '.snapshot') {
         $File::Find::prune = 1;
         return;
     }
-    # skip files owned by root with group root/daemon/sysadmin (far too many)
-    next if $uid == 0 && ($gid == 0 || $gid == 1 || $gid == 10000);
-    # record files with undesired uid
-    if ($uid < 1100 || $uid > 9999 || ($uid >= 3601 && $uid <= 3610)) {
+    # record files with notable uid
+    unless ($uid_filter->matches($uid)) {
 	# skip files owned by root or daemon (too many)
-	next if $uid < 2;
 	print "u$uid:$File::Find::dir\n"
 	    if $verbose && !$uid{$uid}{$File::Find::dir};
 	$uid{$uid}{$File::Find::dir}++;
     }
-    # record files with undesired gid
-    if ($gid < 1100 || $gid > 9999 || ($gid >= 3601 && $gid <= 3610)) {
-	# skip files with one of these groups (too many files):
-	# root (0), daemon (1), old CIFS forcegroup (19), user (20)
-	next if $gid < 2 || $gid == 19 || $gid == 20;
+    # record files with notable gid
+    unless ($gid_filter->matches($gid)) {
 	print "g$gid:$File::Find::dir\n"
 	    if $verbose && !$gid{$gid}{$File::Find::dir};
 	$gid{$gid}{$File::Find::dir}++;
@@ -84,24 +147,30 @@ sub uniq {
 }
 
 # Traverse desired filesystems
-for my $vol (1..9) {
-    File::Find::find({ wanted => \&wanted }, "/Nfs/Mounts/elmer-vol$vol");
-}
+my @roots = @ARGV;
+@roots = map { "/Nfs/Mounts/elmer-vol$_" } 1..9 unless @roots;
+File::Find::find({ wanted => \&wanted }, @roots);
+
 close $logfile;
 
-# dump database
+# dump text database
 # Record format: /^[ug]\s*(\d+):\s*(\d+):([^\0]*)\0\n\z/
 # fields: uid/gid:#files:directory
-my $fn = 'ugid-list';
-my $fntmp = "$fn~";
-open(my $db, '>', $fntmp) || die("Can't write '$fntmp': $!\n");
-for my $id (sort {$a<=>$b} uniq (keys %uid, keys %gid)) {
-    for my $dir (sort keys %{$uid{$id}}) {
-	printf $db "u%5d:%4d:%s\0\n", $id, $uid{$id}{$dir}, $dir;
-    }
-    for my $dir (sort keys %{$gid{$id}}) {
-	printf $db "g%5d:%4d:%s\0\n", $id, $gid{$id}{$dir}, $dir;
-    }
-}
-close($db);
-rename $fntmp, $fn;
+#my $fntmp = "$dbfn~";
+#open(my $db, '>', $fntmp) || die("Can't write '$fntmp': $!\n");
+#for my $id (sort {$a<=>$b} uniq (keys %uid, keys %gid)) {
+#    for my $dir (sort keys %{$uid{$id}}) {
+#	printf $db "u%5d:%4d:%s\0\n", $id, $uid{$id}{$dir}, $dir;
+#    }
+#    for my $dir (sort keys %{$gid{$id}}) {
+#	printf $db "g%5d:%4d:%s\0\n", $id, $gid{$id}{$dir}, $dir;
+#    }
+#}
+#close($db);
+#rename $fntmp, $dbfn;
+
+# dumb binary database
+my $fntmp = "$dbfn~";
+my $db = UGidScan->read_hash_list(\%uid, \%gid);
+store $db, $fntmp;
+rename $fntmp, $dbfn;

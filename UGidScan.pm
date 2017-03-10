@@ -3,7 +3,7 @@ package UGidScan;
 use strict;
 
 sub read_text_list {
-    my ($dbfn) = @_;
+    my ($class, $dbfn) = @_;
     my $dbf;
     my %uid;
     my %gid;
@@ -12,9 +12,9 @@ sub read_text_list {
     local $/ = "\0\n";
     while (<$dbf>) {
 	if (/\Au\s*(\d+):\s*(\d+):(.*)\0\n\z/) {
-	    $uid{$1}{$3} = $2;
+	    push @{$uid{$1}}, $3;
 	} elsif (/\Ag\s*(\d+):\s*(\d+):(.*)\0\n\z/) {
-	    $gid{$1}{$3} = $2;
+	    push @{$gid{$1}}, $3;
 	} else {
 	    die("Unexpected record in '$dbfn':\n$_");
 	}
@@ -26,7 +26,28 @@ sub read_text_list {
     $db{uids} = [ sort {$a <=> $b} keys %uid ];
     $db{gids} = [ sort {$a <=> $b} keys %gid ];
     
-    return bless \%db;
+    return bless \%db => $class;
+}
+
+# Converts from the hash of hashes format used in ugid-scan
+# into the hash of arrays format used to serialize into an index file
+sub read_hash_list {
+    my ($class, $uid_hash, $gid_hash) = @_;
+
+    my %uid;
+    my %gid;
+    for my $u (keys %$uid_hash) {
+	push @{$uid{$u}}, sort keys %{$uid_hash->{$u}};
+    }
+    for my $g (keys %$gid_hash) {
+	push @{$gid{$g}}, sort keys %{$gid_hash->{$g}};
+    }
+
+    my %db = ( uid => \%uid, gid => \%gid );
+    $db{uids} = [ sort {$a <=> $b} keys %uid ];
+    $db{gids} = [ sort {$a <=> $b} keys %gid ];
+
+    return bless \%db => $class;
 }
 
 # List all directories that contain files with uids from a given range
@@ -34,7 +55,7 @@ sub uid_range_dirs {
     my ($db, $range) = @_;
     my $filter = Filter->new($range);
     return [sort {$a cmp $b}
-	    map { keys %{$db->{uid}{$_}} }
+	    map { @{$db->{uid}{$_}} }
 	    grep { $filter->matches($_) } @{$db->{uids}}];
 }
 
@@ -43,7 +64,7 @@ sub gid_range_dirs {
     my ($db, $range) = @_;
     my $filter = Filter->new($range);
     return [sort {$a cmp $b}
-	    map { keys %{$db->{gid}{$_}} }
+	    map { @{$db->{gid}{$_}} }
 	    grep { $filter->matches($_) } @{$db->{gids}}];
 }
 

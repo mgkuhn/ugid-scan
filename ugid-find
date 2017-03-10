@@ -9,6 +9,72 @@ use strict;
 use UGidScan;
 use Storable;
 
+our $dbfn = 'ugid-list.sdb';
+
+our $usage = <<"EOT";
+Search for files on elmer with undesirable uid or gid.
+
+Usage: ugid-find [options] command ...
+
+Options:
+
+  -f <filename>    Set filename of database/index output file
+                   (default: '$dbfn')
+
+Selection commands:
+
+  uiddir=<range1>  select all directories that contain (as an immediate
+                   child node) a file and directory owned by a uid
+                   in the integer range <range1>
+
+  giddir=<range2>  select all directories that contain (as an immediate
+                   child node) a file and directory belonging to a
+                   gid in the integer range <range2>
+
+  uid=<range1>     select all files and directories owned by a uid in <range1>
+
+  gid=<range2>     select all files and directories with gid in <range2>
+
+  uid=<range1>:<range2>
+                   select all files or directories owned by a uid in <range1>
+                   that also have a gid in <range2>
+
+  gid=<range1>:<range2>
+                   select all files or directories with gid in <range2>
+                   that also have a uid in <range1>
+
+Output commands:
+
+  print            output all pathnames on stack as LF-terminated strings
+
+  print0           output all pathnames on stack as NUL-terminated strings
+                   (for piping into "xargs -0r")
+
+  ll               output all pathnames with "ls -lnd"
+
+  count            output the length of the pathname lists on the stack
+
+Usage examples:
+
+\$ ./ugid-find uid=101 count
+
+\$ ./ugid-find gid=^3601:3601 ll
+
+\$ ./ugid-find gid=^3601:3601 print0 | xargs -0r ls -lnd
+
+\$ ./ugid-find gid=^3601:3601 print0 | xargs -0r chgrp -hc 9601
+
+EOT
+
+while ($ARGV[0] =~ /^-/) {
+    $_ = shift @ARGV;
+    if ($_ eq '-f') {
+	$dbfn = shift @ARGV;
+    } else {
+	die("Unknown option '$_'\n\n$usage");
+    }
+}
+
 my %errors;
 
 # Search all files contained in one of the listed directories
@@ -38,13 +104,7 @@ sub search {
     return [sort {$a cmp $b} @files];
 }
 
-my $db;
-if (-r 'ugid-list.sdb') {
-    $db = retrieve 'ugid-list.sdb';
-} else {
-    $db = UGidScan::read_text_list('ugid-list');
-    #store $db, 'ugid-list.sdb';
-}
+our $db = retrieve $dbfn;
 
 my @stack = ();
 

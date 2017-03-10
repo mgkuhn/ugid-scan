@@ -6,12 +6,12 @@ Markus Kuhn
 ugid-scan/filter is a simple search engine for locating files in NFS
 exports of the departmental filer "elmer" that have certain undesired
 uid or gid values. It is an aide to help with renumbering historic or
-accidental uid/gid assignments, towards implementing the number
-allocation scheme described at
+accidental uid/gid assignments, towards implementing the
+number-allocation scheme described at
 
   https://wiki.cam.ac.uk/cl-sys-admin/UID/GID_allocation
 
-The tool consists of two components: ugig-scan and ugid-filter
+The tool consists of two components: ugid-scan and ugid-filter
 
 A) ugid-scan
 
@@ -34,26 +34,35 @@ root from a machine with the following properties:
 
   - NFSv3 mounts, such that numeric uid and gid can be acquired
     without any LDAP/idmapd-dependent conversions
+    [in /etc/default/autofs set OPTIONS="-Onfsvers=3"]
 
-  - Mount option "nodiratime" or "noatime" should be set for
-    /Nfs/Mounts/elmer-vol*, otherwise the scan will update the access
-    time field in the inode of every directory scanned, which can
-    create additional backup load
+In addition, on the NetApp file server, it might be worth considering
+to set on the scanned volumes the option
 
-ugid-scan currently has no command-line options and writes three files
-into the current working directory:
+  vol options <volname> no_atime_update on
 
-  ugid-list   is the index of files created, about 0.5 gigabytes long
+otherwise the scan will update the atime field in the inode of every
+directory scanned, which can create additional backup churn. [The NFS
+client mount options "ro", "nodiratime" or "noatime" do *not* affect
+the server-side update of atime, they merely change the client-cache
+semantics for atime.]
 
-  ugid-list~  is the temporary name of ugid-list while it is written
-              (to be renamed into ugid-list when finished)
+By default, ugid-scan writes three files into the current working directory:
 
-  ugid-log    is a progress-report log file that indicates how much
-              time the scan spent in various parts of the name space
+  ugid-list.sdb   is the index of files created, about 0.5 gigabytes long
+
+  ugid-list.sdb~  is the temporary name of ugid-list while it is written
+                  (to be renamed into ugid-list.sdb when finished)
+
+  ugid-log        is a progress-report log file that indicates how much
+                  time the scan spent in various parts of the name space
+
+See "ugid-scan --help" for options to change these, as well as some
+other parameters.
 
 B) ugid-find
 
-This tool reads ugid-list and performs queries on it. It accepts a
+This tool reads ugid-list.sdb and performs queries on it. It accepts a
 sequence of commands on the command line. There are two types of
 commands. Selection commands perform queries and deposit lists of
 pathnames on a stack. Output commands print the list of pathnames on
@@ -89,8 +98,8 @@ expect the output of giddir=<range2> to be small.
 
 A <range> can be a comma-separated list of ids or id-ranges (with
 hyphen), or it can be a single numeric id or range prefixed with ^
-meaning "not". Example ranges are "101,110-115,10000-", "^3600" and
-"^3600-3609".
+meaning "not". Example ranges are "101,110-115,10000-", "^3601" and
+"^3601-3610".
 
 Note that the tool deliberately does not use any symbolic group user
 or group names from the getent or LDAP "passwd" and "group" tables.
@@ -119,3 +128,4 @@ $ ./ugid-find gid=^3601:3601 print0 | xargs -0r ls -lnd
 
 $ ./ugid-find gid=^3601:3601 print0 | xargs -0r chgrp -hc 9601
 
+$ ./ugid-find --help
