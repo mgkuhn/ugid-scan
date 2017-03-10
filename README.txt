@@ -1,4 +1,4 @@
-ugif-scan/filer
+ugid-scan/filer
 ---------------
 
 Markus Kuhn
