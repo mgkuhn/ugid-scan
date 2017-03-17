@@ -1,0 +1,6 @@
+#!/bin/bash
+./ugid-scan -f ugid-list-test.sdb -l ugid-log-test \
+        -u 1100-3600,0-1,3611-9499 \
+        -g 1100-3600,0-1,3611-10000,19-20 \
+        -n '/.snapshot/sv_daily.0' '' \
+        /Nfs/Mounts/elmer-vol4/.snapshot/sv_daily.0/www-1/www
