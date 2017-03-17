@@ -1,25 +1,33 @@
 #!/usr/bin/perl -w
-# Search for files and directories on mounted elmer
-# volumes that have certain out-dated uid or gid fields,
-# based on the ugid-list index file prepared by ugid-scan.
+# Search for files and directories by uid or gid
+# based on an index file prepared by ugid-scan.
 #
 # Markus Kuhn
 
 use strict;
 use UGidScan;
 use Storable;
+use POSIX qw(strftime);
 
 our $dbfn = 'ugid-list.sdb';
 
 our $usage = <<"EOT";
-Search for files on elmer with undesirable uid or gid.
+Search for files by uid or gid.
 
 Usage: ugid-find [options] command ...
 
 Options:
 
-  -f <filename>    Set filename of database/index output file
+  -f <filename>    filename of index file produced by ugid-scan
                    (default: '$dbfn')
+
+This tool reads the index file into memory and performs queries on it.
+It accepts a sequence of commands on the command line. There are
+several types of commands. Selection commands perform queries and
+deposit lists of pathnames on a stack. Filter commands transform a
+list of pathnames on the stack. Output commands print the list of
+pathnames on the stack in different forms. Information commands
+display metadata about the index.
 
 Selection commands:
 
@@ -43,6 +51,29 @@ Selection commands:
                    select all files or directories with gid in <range2>
                    that also have a uid in <range1>
 
+The output of uid=<range1>:<range2> and gid=<range1>:<range2> should
+be identical, but the runtime may differ due to different search
+strategies. Prefer uid=<range1>:<range2> if you expect the output of
+uiddir=<range1> to be small and use gid=<range1>:<range2> if you
+expect the output of giddir=<range2> to be small.
+
+A <range> can be a comma-separated list of ids or id-ranges (with
+hyphen), or it can be a single numeric id or range prefixed with ^
+meaning "not". Example ranges are "101,110-115,10000-", "^3601" and
+"^3601-3610".
+
+Note that the tool deliberately does not support any symbolic group
+user or group names from the getent or LDAP "passwd" and "group"
+tables. This is to avoid accidents by ambiguities in the assignment of
+these names.
+
+Filter commands:
+
+  dirnames         strip filenames from a list of paths
+
+  prefixes         remove from a list of paths all those for which
+                   a directoy prefix is already in the list
+
 Output commands:
 
   print            output all pathnames on stack as LF-terminated strings
@@ -54,6 +85,14 @@ Output commands:
 
   count            output the length of the pathname lists on the stack
 
+Query index metadata:
+
+  uids             list of uids in the index
+
+  gids             list of gids in the index
+
+  info             print some information about the scan
+
 Usage examples:
 
 \$ ./ugid-find uid=101 count
@@ -64,14 +103,21 @@ Usage examples:
 
 \$ ./ugid-find gid=^3601:3601 print0 | xargs -0r chgrp -hc 9601
 
+\$ ./ugid-find uiddir=101 prefixes print0 | \
+      xargs -0r chown -hcR --from=101:60101 1101:1101
 EOT
 
-while ($ARGV[0] =~ /^-/) {
+die("Use option -h for help.\n") unless @ARGV;
+
+while (@ARGV && $ARGV[0] =~ /^-/) {
     $_ = shift @ARGV;
     if ($_ eq '-f') {
 	$dbfn = shift @ARGV;
+    } elsif ($_ eq '-h' || $_ eq '--help') {
+	print $usage;
+	exit 0;
     } else {
-	die("Unknown option '$_'\n\n$usage");
+	die("Unknown option '$_', use option -h for help.\n");
     }
 }
 
@@ -95,13 +141,18 @@ sub search {
 		$errors{$dir}++;
 		next;
 	    }
-	    next unless $ufilter->matches($fuid);
-	    next unless $gfilter->matches($fgid);
+	    next unless $ufilter->matches0($fuid);
+	    next unless $gfilter->matches0($fgid);
 	    push @files, "$dir/$_";
 	}
 	closedir $dh;
     }
-    return [sort {$a cmp $b} @files];
+    return [sort @files];
+}
+
+sub uniq {
+    my %seen;
+    grep !$seen{$_}++, @_;
 }
 
 our $db = retrieve $dbfn;
@@ -128,6 +179,28 @@ while (@ARGV) {
 	# and optionally filter for uid ranges
 	my $dirs = $db->gid_range_dirs($2);
 	push @stack, search($1, $2, $dirs);
+    } elsif ($opt eq 'dirnames') {
+	# replace all filenames with the corresponding directory names,
+	# then eliminate duplicates
+	my @dirnames;
+	for my $f (@{pop @stack}) {
+	    $f =~ s/\/[^\/]+$// if -l $f || ! -d _;
+	    push @dirnames, $f;
+	}
+	push @stack, [sort(uniq(@dirnames))];
+    } elsif ($opt eq 'prefixes') {
+	# eliminate all pathnames from a list for which a prefix
+	# also appears in the list
+	my @prefixes;
+      FILE:
+	for my $f (@{pop @stack}) {
+	    for my $p (@prefixes) {
+		next FILE if (substr($f, 0, length($p)) eq $p &&
+			      substr($f, length($p), 1) eq '/');
+	    }
+	    push @prefixes, $f;
+	}
+	push @stack, [@prefixes];
     } elsif ($opt eq 'print') {
 	# print all paths on the stack as a LF-terminated string
 	for my $s (@stack) {
@@ -156,6 +229,29 @@ while (@ARGV) {
 	for my $s (@stack) {
 	    print scalar(@{$s}), "\n";
 	}
+    } elsif ($opt eq 'uids') {
+	# output list of uids indexed
+	print join(',', @{$db->{uids}}), "\n";
+    } elsif ($opt eq 'gids') {
+	# output list of gids indexed
+	print join(',', @{$db->{gids}}), "\n";
+    } elsif ($opt eq 'info') {
+	# output metadata about the scan
+	next unless exists $db->{command};
+	print("Scan command:  ", join(' ', @{$db->{command}}), "\n");
+	print("Scan time:     ",
+	      strftime('%Y-%m-%d %H:%M:%S', localtime $db->{time}[0]), " to ",
+	      strftime('%Y-%m-%d %H:%M:%S', localtime $db->{time}[1]), "\n");
+	my $elapsed = $db->{time}[1] - $db->{time}[0];
+	printf("Scan duration: %d:%02d:%02d\n",
+	       $elapsed / 3600, ($elapsed % 3600) / 60, $elapsed % 60);
+	printf("Scanner:       %s:%s@%s\n",
+	       $db->{euid}, $db->{egid}, $db->{hostname});
+	print("Excluded uids: ", $db->{excluded_uids}, "\n")
+	    if defined $db->{excluded_uids};
+	print("Excluded gids: ", $db->{excluded_gids}, "\n")
+	    if defined $db->{excluded_gids};
+	print("Mount options:\n", $db->{mounts});
     } else {
 	die("Unknown option '$opt'\n");
     }

@@ -1,12 +1,9 @@
 #!/usr/bin/perl
-# Scan mounted elmer volumes via NFS for files and directories
-# with UID/GID values that we might want to migrate.
-# Outputs a database of directories that contain such files,
-# including which and how many out-of-range uid/gid are present
-# in that directory
+# Scan filesystem and build a database index of which directories contain
+# files and directories with what numeric uid and gid.
 #
-# Fast testrun:
-# $ ./ugid-scan -f ugid-list-test.sdb -l ugid-log-test -r 10 /Nfs/Mounts/elmer-vol4/www-1/www /Nfs/Mounts/elmer-vol1/homes-8/acr31
+# Certain uid and gid ranges can be excluded from the index, such that
+# the index only records files with uid/gid values that need attention.
 #
 # Markus Kuhn
 
@@ -22,17 +19,22 @@ our %uid;
 our %gid;
 
 # command-line parameters
-our $uid_range = '1100-3600,0-1,3611-9999';
-our $gid_range = '1100-3600,0-1,3611-10000,19-20';
+#
+our $excluded_uids;
+our $excluded_gids;
 our $verbose = 0;
-our $report_frequency = 600;   # log entry every that many seconds
-our $logfilename = 'ugid-log';
+our $report_frequency = 10;   # log entry every that many seconds
+our $logfilename;
 our $dbfn = 'ugid-list.sdb';
+our @roots;
+our $normalize_old;
+our $normalize_new;
 
-our $usage = <<"EOT";
-Build a database index of files on elmer with undesirable uid or gid.
+our @usage;
+$usage[1] = <<"EOT";
+Build a database index to search for files based on numeric uid and/or gid.
 
-Usage: ugid-scan [options] [path ...]
+Usage: $0 [options] path ...
 
 Options:
 
@@ -40,26 +42,49 @@ Options:
 
   -l <filename>    Set logfile name
 
-  -r <int>         Add a logfile entry every <int> seconds.
+  -r <int>         Add a logfile entry every <int> seconds
 
-  -u <range>       UID range to be ignored
+  -u <range>       UID ranges to be excluded from the index
 
-  -g <range>       GID range to be ignored
+  -g <range>       GID ranges to be excluded from the index
+
+  -n <old> <new>   replace substring <old> in a pathname with substring <new>
+                   before recording it in the index
 
   -v               Increase verbosity level
 
   -h               Print this help message
 
-Not providing any command-line arguments is equivalent to these defaults:
+EOT
+$usage[2] = <<"EOT";
+Example:
 
-\$ uid-scan -f $dbfn -l $logfilename -r $report_frequency \\
-           -u $uid_range -g $gid_range \\
-           /Nfs/Mounts/elmer-vol{1,2,3,4,5,6,7,8,9}
+\$ $0 -f ugid-list.sdb \
+        -u 1100-3600,0-1,3611-9499 \
+        -g 1100-3600,0-1,3611-10000,19-20 \
+        -n '/.snapshot/sv_hourly.0' '' \
+        /Nfs/Mounts/elmer-vol{1,3,4,5,6,8}/.snapshot/sv_daily.0 \
+        /Nfs/Mounts/elmer-vol{7,9}
+EOT
+$usage[3] = <<"EOT";
 
-Run only on NFS clients with mount options "nfsvers=3,nodiratime"
-(e.g., set in /etc/default/autofs).
+Preferably run
+
+  - on an NFSv3 client, as NFSv4 translates uids and gids
+    (e.g. with Linux autofs mount option "nfsvers=3" in /etc/default/autofs)
+
+  - as user "root" on NFS exports without root squash
+
+  - on snapshot directories, to prevent atime updates
+
 EOT
 
+sub usage {
+    print STDERR @usage;
+    exit 0;
+}
+
+our @command = ($0, @ARGV);
 while ($ARGV[0] =~ /^-/) {
     $_ = shift @ARGV;
     if ($_ eq '-f') {
@@ -69,33 +94,30 @@ while ($ARGV[0] =~ /^-/) {
     } elsif ($_ eq '-r') {
 	$report_frequency = shift @ARGV;
     } elsif ($_ eq '-u') {
-	$uid_range = shift @ARGV;
+	$excluded_uids = shift @ARGV;
     } elsif ($_ eq '-g') {
-	$gid_range = shift @ARGV;
+	$excluded_gids = shift @ARGV;
+    } elsif ($_ eq '-n') {
+	$normalize_old = shift @ARGV;
+	$normalize_new = shift @ARGV;
     } elsif ($_ eq '-v') {
 	$verbose++;
     } elsif ($_ eq '-h' || $_ eq '--help') {
-	print $usage;
-	exit 0;
+	usage();
     } else {
-	die("Unknown option '$_'\n\n$usage");
+	die("Unknown option '$_', use option -h for help.\n");
     }
 }
 
-our $uid_filter = Filter->new($uid_range);
-our $gid_filter = Filter->new($gid_range);
+@roots = @ARGV;
+usage() unless @roots;
 
-# as this is a long-running process, output progress reports
+our $excluded_uids_filter = Filter->new($excluded_uids);
+our $excluded_gids_filter = Filter->new($excluded_gids);
+
 our $report = 0;
 our $logfile;
-our $starttime = time;
-if ($logfilename) {
-    $SIG{ALRM} = sub { $report = 1; };
-    open($logfile, '>', $logfilename)
-	|| die("Cannot write log file '$logfilename': $!\n");
-    $logfile->autoflush(1);
-    alarm $report_frequency;
-}
+our $timestart = time;
 
 # this subroutine visits every file found
 sub wanted {
@@ -105,7 +127,7 @@ sub wanted {
     # output progress report requested by SIGALRM
     if ($report) {
 	$report = 0;
-	my $elapsed = time - $starttime;
+	my $elapsed = time - $timestart;
 	print($logfile
 	      sprintf('%3d:%02d:%02d',
 		      $elapsed / 3600, ($elapsed % 3600) / 60, $elapsed % 60),
@@ -125,52 +147,61 @@ sub wanted {
         $File::Find::prune = 1;
         return;
     }
+
+    # normalize directory name
+    my $ndn = $File::Find::dir;
+    my $p;
+    if (defined $normalize_old &&
+	($p = index($ndn, $normalize_old)) >= 0) {
+	substr($ndn, $p, length($normalize_old)) = $normalize_new;
+    }
+
     # record files with notable uid
-    unless ($uid_filter->matches($uid)) {
+    unless (defined $excluded_uids && $excluded_uids_filter->matches($uid)) {
 	# skip files owned by root or daemon (too many)
-	print "u$uid:$File::Find::dir\n"
-	    if $verbose && !$uid{$uid}{$File::Find::dir};
-	$uid{$uid}{$File::Find::dir}++;
+	print "u$uid:$ndn\n"
+	    if $verbose && !$uid{$uid}{$ndn};
+	$uid{$uid}{$ndn}++;
     }
     # record files with notable gid
-    unless ($gid_filter->matches($gid)) {
-	print "g$gid:$File::Find::dir\n"
-	    if $verbose && !$gid{$gid}{$File::Find::dir};
-	$gid{$gid}{$File::Find::dir}++;
+    unless (defined $excluded_gids && $excluded_gids_filter->matches($gid)) {
+	print "g$gid:$ndn\n"
+	    if $verbose && !$gid{$gid}{$ndn};
+	$gid{$gid}{$ndn}++;
     }
 }
 
-# remove duplicates from array
-sub uniq {
-    my %seen;
-    grep !$seen{$_}++, @_;
+# as this is a long-running process, output progress reports
+if ($logfilename) {
+    $SIG{ALRM} = sub { $report = 1; };
+    open($logfile, '>', $logfilename)
+	|| die("Cannot write log file '$logfilename': $!\n");
+    $logfile->autoflush(1);
+    alarm $report_frequency;
 }
 
 # Traverse desired filesystems
-my @roots = @ARGV;
-@roots = map { "/Nfs/Mounts/elmer-vol$_" } 1..9 unless @roots;
 File::Find::find({ wanted => \&wanted }, @roots);
+our $timeend = time;
 
-close $logfile;
+close $logfile if $logfilename;
 
-# dump text database
-# Record format: /^[ug]\s*(\d+):\s*(\d+):([^\0]*)\0\n\z/
-# fields: uid/gid:#files:directory
-#my $fntmp = "$dbfn~";
-#open(my $db, '>', $fntmp) || die("Can't write '$fntmp': $!\n");
-#for my $id (sort {$a<=>$b} uniq (keys %uid, keys %gid)) {
-#    for my $dir (sort keys %{$uid{$id}}) {
-#	printf $db "u%5d:%4d:%s\0\n", $id, $uid{$id}{$dir}, $dir;
-#    }
-#    for my $dir (sort keys %{$gid{$id}}) {
-#	printf $db "g%5d:%4d:%s\0\n", $id, $gid{$id}{$dir}, $dir;
-#    }
-#}
-#close($db);
-#rename $fntmp, $dbfn;
-
-# dumb binary database
-my $fntmp = "$dbfn~";
+# convert hash of hashes data into a more compact hash of arrays
 my $db = UGidScan->read_hash_list(\%uid, \%gid);
+
+# also record some metadata about the scan in $db
+$db->{'command'} = [ @command ];
+$db->{'euid'} = $>;
+$db->{'egid'} = $);
+$db->{'hostname'} = `/bin/hostname`;
+chomp $db->{'hostname'};
+for my $root (@roots) { -e "$root/"; }  # trigger automounts
+$db->{'mounts'} = `findmnt -t nfs`;
+$db->{'excluded_uids'} = $excluded_uids;
+$db->{'excluded_gids'} = $excluded_gids;
+$db->{'time'} = [ $timestart, $timeend ];
+
+# write index file by serializing $db data structure
+my $fntmp = "$dbfn~";
 store $db, $fntmp;
 rename $fntmp, $dbfn;

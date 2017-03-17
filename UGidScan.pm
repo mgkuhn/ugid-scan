@@ -25,7 +25,7 @@ sub read_text_list {
     my %db = ( uid => \%uid, gid => \%gid );
     $db{uids} = [ sort {$a <=> $b} keys %uid ];
     $db{gids} = [ sort {$a <=> $b} keys %gid ];
-    
+
     return bless \%db => $class;
 }
 
@@ -54,18 +54,36 @@ sub read_hash_list {
 sub uid_range_dirs {
     my ($db, $range) = @_;
     my $filter = Filter->new($range);
-    return [sort {$a cmp $b}
-	    map { @{$db->{uid}{$_}} }
-	    grep { $filter->matches($_) } @{$db->{uids}}];
+    my @uids = grep { $filter->matches0($_) } @{$db->{uids}};
+
+    # warn about searching for excluded uids
+    if (exists $db->{excluded_uids}) {
+	my $excluded = Filter->new($db->{excluded_uids});
+	my @not_in_index = grep { $excluded->matches($_) } $filter->corners;
+	warn("Warning: uids $db->{excluded_uids} were excluded during scan,\n",
+	     "         which includes ", join(', ', @not_in_index), "\n")
+	    if @not_in_index;
+    }
+
+    return [sort map { @{$db->{uid}{$_}} } @uids ];
 }
 
 # List all directories that contain files with gids from a given range
 sub gid_range_dirs {
     my ($db, $range) = @_;
     my $filter = Filter->new($range);
-    return [sort {$a cmp $b}
-	    map { @{$db->{gid}{$_}} }
-	    grep { $filter->matches($_) } @{$db->{gids}}];
+    my @gids = grep { $filter->matches0($_) } @{$db->{gids}};
+
+    # warn about searching for excluded gids
+    if (exists $db->{excluded_gids}) {
+	my $excluded = Filter->new($db->{excluded_gids});
+	my @not_in_index = grep { $excluded->matches($_) } $filter->corners;
+	warn("Warning: gids $db->{excluded_gids} were excluded during scan,\n",
+	     "         which includes ", join(', ', @not_in_index), "\n")
+	    if @not_in_index;
+    }
+
+    return [sort {$a cmp $b} map { @{$db->{gid}{$_}} } @gids ];
 }
 
 package Filter;
@@ -96,7 +114,8 @@ sub new {
 	    die("Unknown filter expression '$_'!\n")
 	}
     }
-    
+
+    # replace empty strings with undef
     @filter = map { (defined $_ && length($_) > 0) ? $_ : undef } @filter;
 
     return bless [@filter] => $class;
@@ -104,11 +123,9 @@ sub new {
 
 # Apply a filter (uid/gid ranges) expression.
 # Return 1 if $id is within the ranges specified by $filter
-# of if the filter expression was empty.
 sub matches {
     my ($filter, $id) = @_;
 
-    return 1 unless @{$filter};
     my @filter = @{$filter};
     while (my ($min, $max) = splice(@filter, 0, 2)) {
 	next if defined $min && $id < $min;
@@ -116,6 +133,28 @@ sub matches {
 	return 1;
     }
     return 0;
+}
+
+# Apply a filter (uid/gid ranges) expression.
+# Return 1 if $id is within the ranges specified by $filter
+# of if the filter expression was empty.
+sub matches0 {
+    my ($filter, $id) = @_;
+
+    return 1 unless @{$filter};
+    return $filter->matches($id);
+}
+
+# Output corner cases in a filter's ranges
+sub corners {
+    my ($filter) = @_;
+    my @corners;
+    my @filter = @{$filter};
+    while (my ($min, $max) = splice(@filter, 0, 2)) {
+	push @corners, $min if defined $min;
+	push @corners, $max if defined $max && (!defined $min || $max > $min);
+    }
+    return sort {$a <=> $b} @corners;
 }
 
 1;
