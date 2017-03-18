@@ -8,7 +8,7 @@
 # We scan snapshots, where available, to avoid updating atime
 # fields of scanned directories.
 #
-# A typical scan takes a bit over 24 hours.
+# A typical scan takes a bit over 6 hours.
 #
 nice ./ugid-scan -f ugid-list-`date -I`.sdb \
         -u 1100-3600,0-1,3611-9499 \

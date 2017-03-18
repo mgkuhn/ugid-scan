@@ -86,6 +86,19 @@ sub gid_range_dirs {
     return [sort {$a cmp $b} map { @{$db->{gid}{$_}} } @gids ];
 }
 
+sub count_dirs {
+    my ($db) = @_;
+    my $uid_dirs = 0;
+    my $gid_dirs = 0;
+    for my $uid (@{$db->{uids}}) {
+	$uid_dirs += scalar(@{$db->{uid}{$uid}});
+    }
+    for my $gid (@{$db->{gids}}) {
+	$gid_dirs += scalar(@{$db->{gid}{$gid}});
+    }
+    return ($uid_dirs, $gid_dirs);
+}
+
 package Filter;
 
 # Prepare a filter (uid/gid ranges) expression

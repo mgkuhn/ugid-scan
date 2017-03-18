@@ -93,6 +93,8 @@ Query index metadata:
 
   info             print some information about the scan
 
+  mounts           display mount options in force during (end of) scan
+
 Usage examples:
 
 \$ ./ugid-find uid=101 count
@@ -132,7 +134,11 @@ sub search {
     my $gfilter = Filter->new($gid);
 
     for my $dir (@{$dirs}) {
-	opendir(my $dh, $dir) || die("Can't read directory '$dir': $!\n");
+	my $dh;
+	unless (opendir($dh, $dir)) {
+	    warn("Can't read directory '$dir': $!\n");
+	    next;
+	};
 	chdir($dir) || die("Can't change to directory '$dir': $!\n");
 	while(readdir $dh) {
 	    next if $_ eq '.' || $_ eq '..';
@@ -237,6 +243,12 @@ while (@ARGV) {
 	print join(',', @{$db->{gids}}), "\n";
     } elsif ($opt eq 'info') {
 	# output metadata about the scan
+	print("$dbfn:\n");
+	my ($uid_dirs, $gid_dirs) = $db->count_dirs;
+	printf("Indexed %d directory entries across %d uids.\n",
+	       $uid_dirs, scalar(@{$db->{uids}}));
+	printf("Indexed %d directory entries across %d gids.\n",
+	       $gid_dirs, scalar(@{$db->{gids}}));
 	next unless exists $db->{command};
 	print("Scan command:  ", join(' ', @{$db->{command}}), "\n");
 	print("Scan time:     ",
@@ -251,7 +263,8 @@ while (@ARGV) {
 	    if defined $db->{excluded_uids};
 	print("Excluded gids: ", $db->{excluded_gids}, "\n")
 	    if defined $db->{excluded_gids};
-	print("Mount options:\n", $db->{mounts});
+    } elsif ($opt eq 'mounts') {
+	print("Mount options during scan:\n", $db->{mounts});
     } else {
 	die("Unknown option '$opt'\n");
     }
