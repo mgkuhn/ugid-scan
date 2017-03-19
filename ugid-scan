@@ -10,8 +10,10 @@
 use strict;
 use File::Find ();
 use POSIX qw(strftime);
-use UGidScan;
 use Storable;
+use FindBin qw($RealBin);     # find directory where this file is located ...
+use lib $RealBin;             # ... and add it to @INC ...
+use UGidScan;                 # so we can load this
 
 # hash (key=uid or gid) of hash (key=directory path) indexing all
 # files found with interesting uid or gid
@@ -25,7 +27,7 @@ our $excluded_gids;
 our $verbose = 0;
 our $report_frequency = 10;   # log entry every that many seconds
 our $logfilename;
-our $dbfn = 'ugid-list.sdb';
+our $dbfn = "$RealBin/ugid-list.sdb";
 our @roots;
 our $normalize_old;
 our $normalize_new;
@@ -39,6 +41,7 @@ Usage: $0 [options] path ...
 Options:
 
   -f <filename>    Set filename of database/index output file
+                   (default: '$dbfn')
 
   -l <filename>    Set logfile name
 
@@ -62,7 +65,7 @@ Example:
 \$ $0 -f ugid-list.sdb \
         -u 1100-3600,0-1,3611-9499 \
         -g 1100-3600,0-1,3611-10000,19-20 \
-        -n '/.snapshot/sv_hourly.0' '' \
+        -n '/.snapshot/sv_daily.0' '' \
         /Nfs/Mounts/elmer-vol{1,3,4,5,6,8}/.snapshot/sv_daily.0 \
         /Nfs/Mounts/elmer-vol{7,9}
 EOT

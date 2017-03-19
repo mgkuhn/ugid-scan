@@ -5,16 +5,18 @@
 # Markus Kuhn
 
 use strict;
-use UGidScan;
 use Storable;
 use POSIX qw(strftime);
+use FindBin qw($RealBin);     # find directory where this file is located ...
+use lib $RealBin;             # ... and add it to @INC ...
+use UGidScan;                 # so we can load this
 
-our $dbfn = 'ugid-list.sdb';
+our $dbfn = "$RealBin/ugid-list.sdb";
 
 our $usage = <<"EOT";
 Search for files by uid or gid.
 
-Usage: ugid-find [options] command ...
+Usage: $0 [options] command ...
 
 Options:
 
