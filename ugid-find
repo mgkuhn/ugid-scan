@@ -213,6 +213,9 @@ while (@ARGV) {
 	# print all paths on the stack as a LF-terminated string
 	for my $s (@stack) {
 	    for my $r (@{$s}) {
+		die("Path ‘$r’ contains a line-feed character.\n",
+		    "Instead of ‘print’ use ‘print0’ or ‘ll’, ",
+		    "or just rename the file. Aborting.\n") if $r =~ /\n/;
 		print $r, "\n";
 	    }
 	}
