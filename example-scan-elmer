@@ -13,7 +13,8 @@
 #
 # A typical scan takes a bit over 6 hours.
 #
-nice ./ugid-scan -u 1100-3600,0-1,3611-9499 \
+nice ./ugid-scan -U nonascii-filenames \
+        -u 1100-3600,0-1,3611-9499 \
         -g 1100-3600,0-1,3611-10000,19-20 $* \
         -n '/.snapshot/sv_daily.0' '' \
         /Nfs/Mounts/elmer-vol{1,3,4,5,6,8}/.snapshot/sv_daily.0 \

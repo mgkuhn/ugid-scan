@@ -27,6 +27,7 @@ our $excluded_gids;
 our $verbose = 0;
 our $report_frequency = 10;   # log entry every that many seconds
 our $logfilename;
+our $ufilename;
 our $dbfn = "$RealBin/ugid-list.sdb";
 our @roots;
 our $normalize_old;
@@ -53,6 +54,8 @@ Options:
 
   -n <old> <new>   replace substring <old> in a pathname with substring <new>
                    before recording it in the index
+
+  -U <filename>    Record unusual filenames (write list of \0-terminated paths)
 
   -v               Increase verbosity level
 
@@ -94,6 +97,8 @@ while ($ARGV[0] =~ /^-/) {
 	$dbfn = shift @ARGV;
     } elsif ($_ eq '-l') {
 	$logfilename = shift @ARGV;
+    } elsif ($_ eq '-U') {
+	$ufilename = shift @ARGV;
     } elsif ($_ eq '-r') {
 	$report_frequency = shift @ARGV;
     } elsif ($_ eq '-u') {
@@ -120,12 +125,13 @@ our $excluded_gids_filter = Filter->new($excluded_gids);
 
 our $report = 0;
 our $logfile;
+our $ufile;
 our $timestart = time;
 
 # this subroutine visits every file found
 sub wanted {
     # skip stale NFS file handles
-    return if /^\.nfs[0-9a-f]{24}$/;
+    return if /^\.nfs[0-9a-f]{24}\z/;
 
     # output progress report requested by SIGALRM
     if ($report) {
@@ -172,6 +178,13 @@ sub wanted {
 	    if $verbose && !$gid{$gid}{$ndn};
 	$gid{$gid}{$ndn}++;
     }
+
+    # output paths of unusual filenames
+    if (defined $ufile && !/^[ -~]+\z/) {
+        print $ufile $ndn;
+        print $ufile "/" unless $ndn =~ /\/\z/;
+        print $ufile $_, "\0";
+    }
 }
 
 # as this is a long-running process, output progress reports
@@ -182,12 +195,18 @@ if ($logfilename) {
     $logfile->autoflush(1);
     alarm $report_frequency;
 }
+if ($ufilename) {
+    # file for recording unusual filenames encountered
+    open($ufile, '>', $ufilename)
+	|| die("Cannot write log file '$ufilename': $!\n");
+}
 
 # Traverse desired filesystems
 File::Find::find({ wanted => \&wanted }, @roots);
 our $timeend = time;
 
 close $logfile if $logfilename;
+close $ufile if $ufilename;
 
 # convert hash of hashes data into a more compact hash of arrays
 my $db = UGidScan->read_hash_list(\%uid, \%gid);
