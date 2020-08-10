@@ -264,6 +264,7 @@ while (@ARGV) {
 	       $elapsed / 3600, ($elapsed % 3600) / 60, $elapsed % 60);
 	printf("Scanner:       %s:%s@%s\n",
 	       $db->{euid}, $db->{egid}, $db->{hostname});
+	print($db->{ps}) if defined $db->{ps};
 	print("Excluded uids: ", $db->{excluded_uids}, "\n")
 	    if defined $db->{excluded_uids};
 	print("Excluded gids: ", $db->{excluded_gids}, "\n")

@@ -219,6 +219,7 @@ $db->{'hostname'} = `/bin/hostname`;
 chomp $db->{'hostname'};
 for my $root (@roots) { -e "$root/"; }  # trigger automounts
 $db->{'mounts'} = `findmnt -t nfs,nfs4`;
+$db->{'ps'} = `ps u --pid $$`;
 $db->{'excluded_uids'} = $excluded_uids;
 $db->{'excluded_gids'} = $excluded_gids;
 $db->{'time'} = [ $timestart, $timeend ];
