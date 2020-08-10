@@ -1,0 +1,27 @@
+#!/bin/bash
+#
+# Example for the University of Cambridge Computer Laboratory
+#
+# Scan all NFS exports of file server "wilbur" on a managed
+# Linux server for files that need renumbering towards
+# implementing the number-allocation scheme described at
+#
+#   https://wiki.cam.ac.uk/cl-sys-admin/UID/GID_allocation
+#
+# We scan snapshots, to avoid updating atime fields of scanned
+# directories.
+#
+# A typical such scan (as a non-root user) takes around 70 hours,
+# causes around 5% CPU load and requires around 600 MB RAM. (A root
+# user might see more files, leading to longer scan times and higher
+# RAM requirements.)
+
+snapshot=.snapshot/daily.`date --iso`_0010
+
+nice ./ugid-scan -U nonascii-filenames \
+        -u 1100-3600,0-1,3611-9499 \
+        -g 1100-3600,0-1,3611-10000,19-20 $* \
+        -n /$snapshot '' \
+        -l ugid-scan.log -r 600 \
+        > ugid-scan.errs 2>&1 \
+        /a/wilbur-raw/*/$snapshot &
